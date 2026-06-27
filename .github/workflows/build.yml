@@ -169,27 +169,3 @@ jobs:
           path: ${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe
           if-no-files-found: error
           retention-days: 30
-
-  # ── Bundle all binaries into one artifact ───────────────────────────────────
-  bundle:
-    name: Bundle all Windows x64 binaries
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Download all per-arch artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: binaries
-          merge-multiple: true   # flatten into a single directory
-
-      - name: List collected binaries
-        run: ls -lh binaries/
-
-      - name: Upload bundle artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: PlentyChess-Windows-x64-all
-          path: binaries/*.exe
-          if-no-files-found: error
-          retention-days: 30
