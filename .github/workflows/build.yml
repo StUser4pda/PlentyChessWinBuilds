@@ -110,31 +110,41 @@ jobs:
       - name: Build ${{ matrix.exe }}.exe
         shell: msys2 {0}
         run: |
-          # Define maximum optimization flags
-          OPT_FLAGS="-flto -fno-plt"
+          # Use Full LTO instead of ThinLTO
+          OPT_FLAGS="-flto"
           
           if [[ "${{ matrix.target }}" == "all" ]]; then
             # --- For AVX-512 targets (Normally skip PGO) ---
             echo "Performing Cross-Architecture PGO for AVX-512..."
             
-            # 1. Build an instrumented generic binary that CAN run on this host
-            make clean
-            make -j$(nproc) _pgo arch=generic CXX="clang++ $OPT_FLAGS" CC="clang $OPT_FLAGS" EXE=pgo_gen.exe SKIP_PROCESS_NET=true
+            # 1. First run a profile-build targeting generic architecture to safely gather metrics
+            make profile-build arch=generic \
+              CXX="clang++ $OPT_FLAGS" \
+              CC="clang $OPT_FLAGS" \
+              EXE=pgo_gen.exe
             
-            # 2. Now that default.profdata is generated, compile the final AVX-512 binary using it!
-            make clean
-            make -j$(nproc) _nopgo arch=${{ matrix.arch }} CXX="clang++ $OPT_FLAGS" CC="clang $OPT_FLAGS" CXXFLAGS_EXTRA="-fprofile-instr-use=default.profdata" EXE=${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe SKIP_PROCESS_NET=true
+            # 2. Clean up the object files but keep default.profdata and processed.bin
+            rm -f src/*.o src/fathom/src/*.o pgo_gen.exe
+            
+            # 3. Build the final AVX-512 binary using the generated profile data
+            make _nopgo arch=${{ matrix.arch }} \
+              CXX="clang++ $OPT_FLAGS" \
+              CC="clang $OPT_FLAGS" \
+              CXXFLAGS_EXTRA="-fprofile-instr-use=default.profdata" \
+              EXE=${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe \
+              SKIP_PROCESS_NET=true
+              
+            # 4. Final cleanup of the profiles
+            rm -f default.profdata default.profraw
             
           else
             # --- For regular targets (bmi2, avx2, ssse3, generic) ---
-            make -j$(nproc) ${{ matrix.target }} \
+            make ${{ matrix.target }} \
               arch=${{ matrix.arch }} \
               CXX="clang++ $OPT_FLAGS" \
               CC="clang $OPT_FLAGS" \
-              LDFLAGS="-flto" \
-              EXE=${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe \
-              SKIP_PROCESS_NET=true
-          fi     
+              EXE=${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe
+          fi
 
       # ── 5. Strip debug symbols ───────────────────────────────────────────────
       - name: Strip ${{ matrix.exe }}.exe
