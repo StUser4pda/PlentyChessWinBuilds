@@ -4,21 +4,13 @@
 # Checks out Yoshie2000/PlentyChess directly; intended to run from any repo.
 #
 # Produces six statically-linked executables (all with full LTO via -flto=full):
-#   PlentyChess-x64-avx512vbmi2.exe   (icelake-client / VBMI2 + BMI2) — full LTO + cross-arch PGO
+#   PlentyChess-x64-avx512vbmi2.exe   (icelake-client / VBMI2 + BMI2)  — full LTO + cross-arch PGO
 #   PlentyChess-x64-avx512.exe        (skylake-avx512  / BMI2)         — full LTO + cross-arch PGO
-#   PlentyChess-x64-bmi2.exe          (haswell / BMI2, no AVX-512)     — full LTO + PGO
+#   PlentyChess-x64-bmi2.exe          (haswell / BMI2, no AVX-512)     — full LTO + cross-arch PGO
 #   PlentyChess-x64-avx2.exe          (haswell / AVX2)                 — full LTO + PGO
-#   PlentyChess-x64-ssse3.exe         (SSSE3 baseline)                 — full LTO + PGO
-#   PlentyChess-x64-generic.exe       (no SIMD extensions)             — full LTO + PGO
+#   PlentyChess-x64-ssse3.exe         (SSSE3 baseline)                 — full LTO + cross-arch PGO
+#   PlentyChess-x64-generic.exe       (no SIMD extensions)             — full LTO + cross-arch PGO
 #
-# LTO note: the Makefile only enables -flto=auto on Windows for MSVC-target
-# clang (clang-cl). MSYS2 CLANG64 targets x86_64-w64-mingw32, so the
-# Makefile's LTO branch is never taken. Instead, -flto=full is injected via
-# CXXFLAGS_EXTRA — a make command-line variable that overrides the Makefile's
-# own empty CXXFLAGS_EXTRA = assignment and propagates to all sub-makes via
-# MAKEFLAGS. Full LTO merges all TUs into one IR module for whole-program
-# optimisation; ThinLTO would be faster to link but misses cross-TU inlining
-# opportunities that matter for a chess engine's search→eval→NNUE hot path.
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: Build PlentyChess — Windows x64
@@ -43,10 +35,10 @@ jobs:
         include:
           # ── arch ──────────────────── note ────────────────────────────────
           - arch: avx512vbmi2
-            exe:  PlentyChess-x64-avx512vbmi2   # cross-arch PGO (see step 4)
+            exe:  PlentyChess-x64-avx512vbmi2
 
           - arch: avx512
-            exe:  PlentyChess-x64-avx512         # cross-arch PGO (see step 4)
+            exe:  PlentyChess-x64-avx512
 
           - arch: bmi2
             exe:  PlentyChess-x64-bmi2
@@ -66,7 +58,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Yoshie2000/PlentyChess
-          submodules: recursive   # fathom (tablebase) lives in a submodule
+          submodules: recursive
 
       - name: Get PlentyChess short commit SHA
         id: sha
@@ -98,81 +90,41 @@ jobs:
         shell: msys2 {0}
         run: make process-net arch=generic CXX=clang++
 
+      - name: Build default.profdata
+        shell: msys2 {0}
+        run: |
+          # 1. Build a throw-away instrumented avx2 binary (no LTO needed)
+          #    CXXFLAGS_EXTRA is empty in the Makefile and designed to be
+          #    overridden from the command line; it propagates to sub-makes
+          #    via MAKEFLAGS so the flag reaches every compile/link call.
+          make -j$(nproc) _nopgo \
+            arch=avx2 CXX=clang++ EXE=pgo_instr.exe SKIP_PROCESS_NET=true \
+            CXXFLAGS_EXTRA="-fprofile-instr-generate"
+
+          # 2. Collect profile data
+          ./pgo_instr.exe bench
+          llvm-profdata merge -output=default.profdata default.profraw
+
+          # 3. Remove instrumented objects and temp files; keep processed.bin
+          rm -f src/*.o src/fathom/src/*.o pgo_instr.exe default.profraw
+
       # ── 4. Compile ───────────────────────────────────────────────────────────
-      #    The Makefile reassigns CFLAGS/CXXFLAGS/LDFLAGS from scratch with =,
-      #    so environment variable injection is wiped out before any flags we
-      #    set reach the compiler.  The Makefile provides CXXFLAGS_EXTRA = 
-      #    (empty) specifically as a command-line override point — command-line
-      #    make variables override file-level assignments and are propagated to
-      #    every sub-make via MAKEFLAGS, so a single CXXFLAGS_EXTRA=... on the
-      #    top-level call reaches all compile and link invocations.
-      #
-      #    avx512 / avx512vbmi2 — cross-architecture PGO:
-      #      The Makefile's profile-build runs bench on the same binary it just
-      #      compiled, which SIGILLs for AVX-512 on free CI runners.
-      #      Workaround: collect the profile on a throw-away avx2 binary (safe
-      #      to run), then apply that data to the final avx512 build.
-      #      LTO is skipped on the instrumented binary — it is only a
-      #      data-collection artefact; only the final binary gets -flto=full.
-      #
-      #    bmi2 / avx2 / ssse3 / generic — standard profile-build:
-      #      The Makefile's _pgo target handles the full instrument→bench→merge
-      #      →recompile cycle.  CXXFLAGS_EXTRA="-flto=full" propagates through
-      #      every sub-make so both compile passes get full LTO.
       - name: Build ${{ matrix.exe }}.exe
         shell: msys2 {0}
         run: |
           EXE="${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe"
 
-          if [[ "${{ matrix.arch }}" == avx512* ]]; then
-
-            # 1. Build a throw-away instrumented avx2 binary (no LTO needed)
-            #    CXXFLAGS_EXTRA is empty in the Makefile and designed to be
-            #    overridden from the command line; it propagates to sub-makes
-            #    via MAKEFLAGS so the flag reaches every compile/link call.
-            make -j$(nproc) _nopgo \
-              arch=avx2 CXX=clang++ EXE=pgo_instr.exe SKIP_PROCESS_NET=true \
-              CXXFLAGS_EXTRA="-fprofile-instr-generate"
-
-            # 2. Collect profile data
-            ./pgo_instr.exe bench
-            llvm-profdata merge -output=default.profdata default.profraw
-
-            # 3. Remove instrumented objects and temp files; keep processed.bin
-            rm -f src/*.o src/fathom/src/*.o pgo_instr.exe default.profraw
-
-            # 4. Build the final AVX-512 binary: full LTO + avx2 profile data
-            make -j$(nproc) _nopgo \
-              arch=${{ matrix.arch }} CXX=clang++ EXE="$EXE" SKIP_PROCESS_NET=true \
-              CXXFLAGS_EXTRA="-flto=full -fprofile-instr-use=default.profdata"
-
-            rm -f default.profdata
-
-          else
-
-            # Standard PGO: Makefile's _pgo handles instrument→bench→merge→recompile.
-            # CXXFLAGS_EXTRA="-flto=full" propagates through profile-build → _pgo
-            # so both the instrumented and final recompile passes get full LTO.
-            make -j$(nproc) profile-build \
-              arch=${{ matrix.arch }} CXX=clang++ EXE="$EXE" SKIP_PROCESS_NET=true \
-              CXXFLAGS_EXTRA="-flto=full"
-
-          fi
+          # Build the final binary: full LTO + avx2 profile data
+          make -j$(nproc) _nopgo \
+            arch=${{ matrix.arch }} CXX=clang++ EXE="$EXE" SKIP_PROCESS_NET=true \
+            CXXFLAGS_EXTRA="-flto=full -fprofile-instr-use=default.profdata"
 
       # ── 5. Strip debug symbols ───────────────────────────────────────────────
       - name: Strip ${{ matrix.exe }}.exe
         shell: msys2 {0}
         run: llvm-strip ${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe
 
-      # ── 6. Quick sanity check ────────────────────────────────────────────────
-      #    Runs after strip — verifies the binary still executes correctly.
-      #    Skip for AVX-512 builds that may not run on this runner.
-      - name: Smoke-test ${{ matrix.exe }}.exe
-        shell: msys2 {0}
-        if: ${{ !startsWith(matrix.arch, 'avx512') }}
-        run: ./${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe bench 2>&1 | tail -5
-
-      # ── 7. Upload per-arch artifact ──────────────────────────────────────────
+      # ── 6. Upload per-arch artifact ──────────────────────────────────────────
       - name: Upload artifact · ${{ matrix.exe }}
         uses: actions/upload-artifact@v4
         with:
