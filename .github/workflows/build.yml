@@ -1,0 +1,170 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# PlentyChess – Windows x64 multi-arch build (MSYS2 CLANG64)
+#
+# Checks out Yoshie2000/PlentyChess directly; intended to run from any repo.
+#
+# Produces six statically-linked executables:
+#   PlentyChess-x64-avx512vbmi2.exe   (icelake-client / VBMI2 + BMI2) — LTO
+#   PlentyChess-x64-avx512.exe        (skylake-avx512  / BMI2)         — LTO
+#   PlentyChess-x64-bmi2.exe          (haswell / BMI2, no AVX-512)     — PGO
+#   PlentyChess-x64-avx2.exe          (haswell / AVX2)                 — PGO
+#   PlentyChess-x64-ssse3.exe         (SSSE3 baseline)                 — PGO
+#   PlentyChess-x64-generic.exe       (no SIMD extensions)             — PGO
+#
+# AVX-512 targets use `make all` (LTO, no PGO) because the free GitHub-hosted
+# Windows runners (Azure AMD EPYC) do not expose AVX-512 to guest VMs.
+# Running the instrumented bench binary would SIGILL, breaking profile-build.
+# All other targets use `make profile-build` (full PGO).
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Build PlentyChess — Windows x64
+
+on:
+  workflow_dispatch:
+
+# Cancel redundant in-progress runs triggered manually.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Per-architecture build ──────────────────────────────────────────────────
+  build:
+    name: Windows x64 · ${{ matrix.arch }}
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false          # keep building the other targets if one fails
+      matrix:
+        include:
+          # ── arch ──────────── make target ─── note ───────────────────────
+          - arch: avx512vbmi2
+            target: all             # no PGO — AVX-512 won't run on free runners
+            exe:    PlentyChess-x64-avx512vbmi2
+
+          - arch: avx512
+            target: all             # no PGO — AVX-512 won't run on free runners
+            exe:    PlentyChess-x64-avx512
+
+          - arch: bmi2
+            target: profile-build   # PGO — haswell ISA runs fine on free runners
+            exe:    PlentyChess-x64-bmi2
+
+          - arch: avx2
+            target: profile-build   # PGO
+            exe:    PlentyChess-x64-avx2
+
+          - arch: ssse3
+            target: profile-build   # PGO
+            exe:    PlentyChess-x64-ssse3
+
+          - arch: generic
+            target: profile-build   # PGO
+            exe:    PlentyChess-x64-generic
+
+    steps:
+      # ── 1. Source ────────────────────────────────────────────────────────────
+      - name: Checkout Yoshie2000/PlentyChess
+        uses: actions/checkout@v4
+        with:
+          repository: Yoshie2000/PlentyChess
+          submodules: recursive   # fathom (tablebase) lives in a submodule
+
+      # ── 2. MSYS2 CLANG64 environment ────────────────────────────────────────
+      #    mingw-w64-clang-x86_64-toolchain  →  clang++, llvm-profdata, lld
+      #    make                              →  GNU make
+      #    curl                              →  network download in Makefile
+      - name: Set up MSYS2 CLANG64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-toolchain
+            make
+            curl
+
+      # ── 3. Compile ───────────────────────────────────────────────────────────
+      #    profile-build (bmi2 / avx2 / ssse3 / generic):
+      #      1. process-net  – download & binarise the NNUE network
+      #      2. _pgo         – compile with -fprofile-instr-generate
+      #                      – run "engine bench" to collect profile data
+      #                      – llvm-profdata merge
+      #                      – recompile with -fprofile-instr-use  (final binary)
+      #
+      #    all (avx512 / avx512vbmi2):
+      #      1. process-net  – same as above
+      #      2. _nopgo       – compile with LTO only (no bench run needed)
+      - name: Build ${{ matrix.exe }}.exe
+        shell: msys2 {0}
+        run: |
+          make -j$(nproc) ${{ matrix.target }} \
+            arch=${{ matrix.arch }} \
+            CXX=clang++ \
+            EXE=${{ matrix.exe }}.exe
+
+      # ── 4. Quick sanity check ────────────────────────────────────────────────
+      #    Verify the binary starts and reports a version / bench result.
+      #    Skip for AVX-512 builds that may not run on this runner.
+      - name: Smoke-test ${{ matrix.exe }}.exe
+        shell: msys2 {0}
+        if: ${{ !startsWith(matrix.arch, 'avx512') }}
+        run: ./${{ matrix.exe }}.exe bench 2>&1 | tail -5
+
+      # ── 5. Upload per-arch artifact ──────────────────────────────────────────
+      - name: Upload artifact · ${{ matrix.exe }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.exe }}           # one artifact per arch for easy download
+          path: ${{ matrix.exe }}.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  # ── Bundle all binaries into one artifact ───────────────────────────────────
+  bundle:
+    name: Bundle all Windows x64 binaries
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all per-arch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries
+          merge-multiple: true   # flatten into a single directory
+
+      - name: List collected binaries
+        run: ls -lh binaries/
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlentyChess-Windows-x64-all
+          path: binaries/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  # ── GitHub Release (tag pushes only) ────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download all per-arch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List release assets
+        run: ls -lh release-assets/
+
+      # softprops/action-gh-release creates the release and attaches the files.
+      - name: Publish GitHub Release ${{ github.ref_name }}
+        uses: softprops/action-gh-release@v2
+        with:
+          name: PlentyChess ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*.exe
