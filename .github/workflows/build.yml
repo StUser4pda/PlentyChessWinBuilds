@@ -143,28 +143,3 @@ jobs:
           path: binaries/*.exe
           if-no-files-found: error
           retention-days: 30
-
-  # ── GitHub Release (tag pushes only) ────────────────────────────────────────
-  release:
-    name: Create GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-      - name: Download all per-arch artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: List release assets
-        run: ls -lh release-assets/
-
-      # softprops/action-gh-release creates the release and attaches the files.
-      - name: Publish GitHub Release ${{ github.ref_name }}
-        uses: softprops/action-gh-release@v2
-        with:
-          name: PlentyChess ${{ github.ref_name }}
-          generate_release_notes: true
-          files: release-assets/*.exe
