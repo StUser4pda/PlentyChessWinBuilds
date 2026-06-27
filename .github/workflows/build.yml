@@ -3,14 +3,10 @@
 #
 # Checks out Yoshie2000/PlentyChess directly; intended to run from any repo.
 #
-# Produces six statically-linked executables (all with full LTO via -flto=full):
-#   PlentyChess-x64-avx512vbmi2.exe   (icelake-client / VBMI2 + BMI2)  — full LTO + cross-arch PGO
-#   PlentyChess-x64-avx512.exe        (skylake-avx512  / BMI2)         — full LTO + cross-arch PGO
-#   PlentyChess-x64-bmi2.exe          (haswell / BMI2, no AVX-512)     — full LTO + cross-arch PGO
-#   PlentyChess-x64-avx2.exe          (haswell / AVX2)                 — full LTO + PGO
-#   PlentyChess-x64-ssse3.exe         (SSSE3 baseline)                 — full LTO + cross-arch PGO
-#   PlentyChess-x64-generic.exe       (no SIMD extensions)             — full LTO + cross-arch PGO
-#
+# 1. generate-pgo: Builds an instrumented AVX2 binary, generates PGO profile,
+#                  and processes the NNUE network (runs once).
+# 2. build: Downloads profile/net, compiles statically-linked executables with
+#           full LTO + PGO for 6 architectures (runs in parallel).
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: Build PlentyChess — Windows x64
@@ -18,42 +14,19 @@ name: Build PlentyChess — Windows x64
 on:
   workflow_dispatch:
 
-# Cancel redundant in-progress runs triggered manually.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ── Per-architecture build ──────────────────────────────────────────────────
-  build:
-    name: Windows x64 · ${{ matrix.arch }}
+  # ── 1. PGO & Network Generation ─────────────────────────────────────────────
+  generate-pgo:
+    name: Generate PGO Profile
     runs-on: windows-latest
-
-    strategy:
-      fail-fast: false          # keep building the other targets if one fails
-      matrix:
-        include:
-          # ── arch ──────────────────── note ────────────────────────────────
-          - arch: avx512vbmi2
-            exe:  PlentyChess-x64-avx512vbmi2
-
-          - arch: avx512
-            exe:  PlentyChess-x64-avx512
-
-          - arch: bmi2
-            exe:  PlentyChess-x64-bmi2
-
-          - arch: avx2
-            exe:  PlentyChess-x64-avx2
-
-          - arch: ssse3
-            exe:  PlentyChess-x64-ssse3
-
-          - arch: generic
-            exe:  PlentyChess-x64-generic
-
+    outputs:
+      sha: ${{ steps.sha.outputs.short }}
+    
     steps:
-      # ── 1. Source ────────────────────────────────────────────────────────────
       - name: Checkout Yoshie2000/PlentyChess
         uses: actions/checkout@v4
         with:
@@ -65,70 +38,114 @@ jobs:
         shell: bash
         run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      # ── 2. MSYS2 CLANG64 environment ────────────────────────────────────────
-      #    mingw-w64-clang-x86_64-toolchain  →  clang++, llvm-profdata, lld
-      #    make                              →  GNU make
-      #    curl                              →  network download in Makefile
       - name: Set up MSYS2 CLANG64
         uses: msys2/setup-msys2@v2
         with:
           msystem: CLANG64
           update: true
+          cache: true
           install: >-
             mingw-w64-clang-x86_64-toolchain
             make
             curl
 
-      # ── 3. Network ───────────────────────────────────────────────────────────
-      #    The tools sub-make inherits arch= from the parent, so building with
-      #    avx512/avx512vbmi2 compiles process_net with -march=skylake-avx512 /
-      #    -march=icelake-client and it SIGILLs immediately on free runners.
-      #    Fix: always process the network with arch=generic (safe on any CPU),
-      #    then pass SKIP_PROCESS_NET=true to the engine build so it never
-      #    re-enters the tools sub-make regardless of target arch.
       - name: Download and process NNUE network (arch=generic)
         shell: msys2 {0}
         run: make process-net arch=generic CXX=clang++
 
-      - name: Build default.profdata
+      - name: Build instrumented binary & collect profile
         shell: msys2 {0}
         run: |
-          # 1. Build a throw-away instrumented avx2 binary (no LTO needed)
-          #    CXXFLAGS_EXTRA is empty in the Makefile and designed to be
-          #    overridden from the command line; it propagates to sub-makes
-          #    via MAKEFLAGS so the flag reaches every compile/link call.
           make -j$(nproc) _nopgo \
             arch=avx2 CXX=clang++ EXE=pgo_instr.exe SKIP_PROCESS_NET=true \
             CXXFLAGS_EXTRA="-fprofile-instr-generate"
-
-          # 2. Collect profile data
+          
           ./pgo_instr.exe bench
           llvm-profdata merge -output=default.profdata default.profraw
 
-          # 3. Remove instrumented objects and temp files; keep processed.bin
-          rm -f src/*.o src/fathom/src/*.o pgo_instr.exe default.profraw
+      - name: Upload PGO Profile and Network
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgo-and-net
+          path: |
+            default.profdata
+            processed.bin
+          retention-days: 1
 
-      # ── 4. Compile ───────────────────────────────────────────────────────────
+  # ── 2. Per-architecture build ───────────────────────────────────────────────
+  build:
+    name: Windows x64 · ${{ matrix.arch }}
+    needs: generate-pgo
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: avx512vbmi2
+            exe:  PlentyChess-x64-avx512vbmi2
+          - arch: avx512
+            exe:  PlentyChess-x64-avx512
+          - arch: bmi2
+            exe:  PlentyChess-x64-bmi2
+          - arch: avx2
+            exe:  PlentyChess-x64-avx2
+          - arch: ssse3
+            exe:  PlentyChess-x64-ssse3
+          - arch: generic
+            exe:  PlentyChess-x64-generic
+
+    steps:
+      - name: Checkout Yoshie2000/PlentyChess
+        uses: actions/checkout@v4
+        with:
+          repository: Yoshie2000/PlentyChess
+          submodules: recursive
+          # Lock to the exact commit SHA generated in step 1
+          ref: ${{ needs.generate-pgo.outputs.sha }}
+
+      - name: Set up MSYS2 CLANG64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          cache: true
+          install: >-
+            mingw-w64-clang-x86_64-toolchain
+            make
+
+      - name: Download PGO Profile and Network
+        uses: actions/download-artifact@v4
+        with:
+          name: pgo-and-net
+          path: .
+
       - name: Build ${{ matrix.exe }}.exe
         shell: msys2 {0}
         run: |
-          EXE="${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe"
-
-          # Build the final binary: full LTO + avx2 profile data
+          EXE="${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}.exe"
+          
+          # Build with LTO and the downloaded profile data
           make -j$(nproc) _nopgo \
             arch=${{ matrix.arch }} CXX=clang++ EXE="$EXE" SKIP_PROCESS_NET=true \
             CXXFLAGS_EXTRA="-flto=full -fprofile-instr-use=default.profdata"
 
-      # ── 5. Strip debug symbols ───────────────────────────────────────────────
-      - name: Strip ${{ matrix.exe }}.exe
+      - name: Strip debug symbols
         shell: msys2 {0}
-        run: llvm-strip ${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe
+        run: llvm-strip ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}.exe
 
-      # ── 6. Upload per-arch artifact ──────────────────────────────────────────
+      - name: Package Release
+        shell: msys2 {0}
+        run: |
+          # Package the executable and the required network file together
+          mkdir release
+          mv ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}.exe release/
+          cp processed.bin release/
+
       - name: Upload artifact · ${{ matrix.exe }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.exe }}-${{ steps.sha.outputs.short }}
-          path: ${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe
+          name: ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}
+          path: release/*
           if-no-files-found: error
           retention-days: 30
