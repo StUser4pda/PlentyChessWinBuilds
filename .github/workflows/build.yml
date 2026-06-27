@@ -106,11 +106,13 @@ jobs:
             # --- For AVX-512 targets (Manually handle PGO pipeline) ---
             echo "Performing Cross-Architecture PGO for AVX-512..."
             
-            # 1. Download and process the neural network
-            make process-net arch=avx2
+            # 1. Download and process the neural network (Pass compilers so sub-make doesn't use missing g++)
+            make process-net \
+              CXX="clang++" \
+              CC="clang"
             
-            # 2. Build an instrumented avx2 binary (safely runnable on GitHub hosts)
-            make _nopgo arch=avx2 \
+            # 2. Build an instrumented generic binary (safely runnable on GitHub hosts)
+            make _nopgo arch=generic \
               CXX="clang++ $OPT_FLAGS" \
               CC="clang $OPT_FLAGS" \
               CXXFLAGS_EXTRA="-fprofile-instr-generate -DPROFILE_GENERATE" \
@@ -139,7 +141,6 @@ jobs:
             
           else
             # --- For regular targets (bmi2, avx2, ssse3, generic) ---
-            # These can use the Makefile's native targets safely as they build in a single pass
             make ${{ matrix.target }} \
               arch=${{ matrix.arch }} \
               CXX="clang++ $OPT_FLAGS" \
