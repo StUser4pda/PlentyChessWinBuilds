@@ -1,12 +1,9 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # PlentyChess – Windows x64 multi-arch build (MSYS2 CLANG64)
 #
-# Checks out Yoshie2000/PlentyChess directly; intended to run from any repo.
-#
-# 1. generate-pgo: Builds an instrumented AVX2 binary, generates PGO profile,
-#                  and processes the NNUE network (runs once).
-# 2. build: Downloads profile/net, compiles statically-linked executables with
-#           full LTO + PGO for 6 architectures (runs in parallel).
+# 1. generate-pgo: Builds an instrumented AVX2 binary and generates the PGO profile.
+# 2. build: For each architecture, emulates process_net via Intel SDE to generate
+#           the correct memory layout, then compiles the static executable.
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: Build PlentyChess — Windows x64
@@ -24,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── 1. PGO & Network Generation ─────────────────────────────────────────────
+  # ── 1. PGO Generation ───────────────────────────────────────────────────────
   generate-pgo:
     name: Generate PGO Profile
     runs-on: windows-latest
@@ -55,9 +52,11 @@ jobs:
             make
             curl
 
-      - name: Download and process NNUE network (arch=generic)
+      - name: Download and process temporary network
         shell: msys2 {0}
-        run: make process-net arch=generic CXX=clang++
+        run: |
+          # Generic layout is sufficient just to run the bench command for PGO
+          make process-net arch=generic CXX=clang++
 
       - name: Build instrumented binary & collect profile
         shell: msys2 {0}
@@ -66,16 +65,15 @@ jobs:
             arch=avx2 CXX=clang++ EXE=pgo_instr.exe SKIP_PROCESS_NET=true \
             CXXFLAGS_EXTRA="-fprofile-instr-generate"
           
+          # Run the engine to generate profiling data
           ./pgo_instr.exe bench
           llvm-profdata merge -output=default.profdata default.profraw
 
-      - name: Upload PGO Profile and Network
+      - name: Upload PGO Profile
         uses: actions/upload-artifact@v4
         with:
-          name: pgo-and-net
-          path: |
-            default.profdata
-            processed.bin
+          name: pgo-data
+          path: default.profdata
           retention-days: 1
 
   # ── 2. Per-architecture build ───────────────────────────────────────────────
@@ -105,8 +103,8 @@ jobs:
       - name: Checkout Yoshie2000/PlentyChess
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.commit }}
           repository: Yoshie2000/PlentyChess
+          ref: ${{ inputs.commit }}
           submodules: recursive
 
       - name: Set up MSYS2 CLANG64
@@ -118,19 +116,41 @@ jobs:
           install: >-
             mingw-w64-clang-x86_64-toolchain
             make
+            curl
+            unzip
 
-      - name: Download PGO Profile and Network
+      - name: Download PGO Profile
         uses: actions/download-artifact@v4
         with:
-          name: pgo-and-net
+          name: pgo-data
           path: .
+
+      - name: Download Intel SDE
+        shell: msys2 {0}
+        run: |
+          curl -sOL https://downloadmirror.intel.com/813591/sde-external-9.33.0-2024-01-07-win.zip
+          unzip -q sde-external*.zip
+          mv sde-external-*/ sde/
+
+      - name: Generate architecture-specific network
+        shell: msys2 {0}
+        run: |
+          NET_ID=$(cat network.txt)
+          curl -sOL "https://github.com/Yoshie2000/PlentyNetworks/releases/download/${NET_ID}/${NET_ID}.bin"
+          
+          # Compile the tool for the specific architecture
+          make -C tools clean
+          make -C tools arch=${{ matrix.arch }} CXX=clang++
+          
+          # Execute through SDE to bypass SIGILL on AVX-512 builds
+          ./sde/sde.exe -future -- ./tools/process_net false "${NET_ID}.bin" processed.bin
 
       - name: Build ${{ matrix.exe }}.exe
         shell: msys2 {0}
         run: |
           EXE="${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}.exe"
           
-          # Build with LTO and the downloaded profile data
+          # Pass SKIP_PROCESS_NET=true so the Makefile doesn't overwrite our SDE-generated processed.bin
           make -j$(nproc) _nopgo \
             arch=${{ matrix.arch }} CXX=clang++ EXE="$EXE" SKIP_PROCESS_NET=true \
             CXXFLAGS_EXTRA="-flto=full -fprofile-instr-use=default.profdata"
@@ -142,9 +162,9 @@ jobs:
       - name: Package Release
         shell: msys2 {0}
         run: |
-          # Package the executable and the required network file together
           mkdir release
           mv ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}.exe release/
+          cp processed.bin release/
 
       - name: Upload artifact · ${{ matrix.exe }}
         uses: actions/upload-artifact@v4
