@@ -117,7 +117,7 @@ jobs:
             mingw-w64-clang-x86_64-toolchain
             make
             curl
-            unzip
+            xz
 
       - name: Download PGO Profile
         uses: actions/download-artifact@v4
@@ -125,22 +125,14 @@ jobs:
           name: pgo-data
           path: .
 
-      - name: Download and verify Intel SDE
+      - name: Install dependencies and unpack Intel SDE
         shell: msys2 {0}
         run: |
-          # Use -L to follow redirects and --retry to handle transient network issues
-          curl -L -o sde.zip https://downloadmirror.intel.com/915934/sde-external-10.8.0-2026-03-15-win.tar.xz
+          # Download
+          curl -L -o sde.tar.xz https://downloadmirror.intel.com/915934/sde-external-10.8.0-2026-03-15-win.tar.xz
           
-          # Debug: check what we actually downloaded
-          echo "File size:"
-          ls -lh sde.zip
-          file sde.zip
-          
-          # Verify it's actually a zip file
-          unzip -t sde.zip || (echo "Downloaded file is not a valid zip! Checking contents..." && head -n 20 sde.zip && exit 1)
-          
-          # Proceed to unzip
-          unzip -q sde.zip
+          # Extract (tar will now find the 'xz' utility in the path)
+          tar -xf sde.tar.xz
           mv sde-external-*/ sde/
           
       - name: Generate architecture-specific network
