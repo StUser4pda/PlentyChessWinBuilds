@@ -34,19 +34,19 @@ jobs:
         include:
           # ── arch ──────────── make target ─── note ───────────────────────
           - arch: avx512vbmi2
-            target: all             # no PGO — AVX-512 won't run on free runners; LTO via env
+            target: all
             exe:    PlentyChess-x64-avx512vbmi2
 
           - arch: avx512
-            target: all             # no PGO — AVX-512 won't run on free runners; LTO via env
+            target: all
             exe:    PlentyChess-x64-avx512
 
           - arch: bmi2
-            target: profile-build   # PGO — haswell ISA runs fine on free runners
+            target: profile-build
             exe:    PlentyChess-x64-bmi2
 
           - arch: avx2
-            target: profile-build   # PGO
+            target: profile-build
             exe:    PlentyChess-x64-avx2
 
           - arch: ssse3
@@ -54,7 +54,7 @@ jobs:
             exe:    PlentyChess-x64-ssse3
 
           - arch: generic
-            target: profile-build   # PGO
+            target: profile-build
             exe:    PlentyChess-x64-generic
 
     steps:
@@ -63,7 +63,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Yoshie2000/PlentyChess
-          submodules: recursive   # fathom (tablebase) lives in a submodule
+          submodules: recursive
 
       - name: Get PlentyChess short commit SHA
         id: sha
