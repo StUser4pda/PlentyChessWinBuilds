@@ -111,8 +111,8 @@ jobs:
               CXX="clang++" \
               CC="clang"
             
-            # 2. Build an instrumented generic binary (safely runnable on GitHub hosts)
-            make _nopgo arch=generic \
+            # 2. Build an instrumented avx2 binary (safely runnable on GitHub hosts)
+            make _nopgo arch=avx2 \
               CXX="clang++ $OPT_FLAGS" \
               CC="clang $OPT_FLAGS" \
               CXXFLAGS_EXTRA="-fprofile-instr-generate -DPROFILE_GENERATE" \
@@ -125,7 +125,7 @@ jobs:
             # 4. Merge the raw profiles into a structured profile data file
             llvm-profdata merge -output=default.profdata default.profraw
             
-            # 5. Clear the generic .o files and temp profiles, keeping default.profdata & processed.bin
+            # 5. Clear the avx2 .o files and temp profiles, keeping default.profdata & processed.bin
             rm -f src/*.o src/fathom/src/*.o pgo_gen.exe default.profraw
             
             # 6. Build the final AVX-512 production binary using the profile data
