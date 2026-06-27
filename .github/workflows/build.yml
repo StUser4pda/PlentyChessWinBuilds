@@ -4,12 +4,12 @@
 # Checks out Yoshie2000/PlentyChess directly; intended to run from any repo.
 #
 # Produces six statically-linked executables (all with ThinLTO via -flto=thin):
-#   PlentyChess-x64-avx512vbmi2.exe   (icelake-client / VBMI2 + BMI2) — LTO
-#   PlentyChess-x64-avx512.exe        (skylake-avx512  / BMI2)         — LTO
-#   PlentyChess-x64-bmi2.exe          (haswell / BMI2, no AVX-512)     — LTO + PGO
-#   PlentyChess-x64-avx2.exe          (haswell / AVX2)                 — LTO + PGO
-#   PlentyChess-x64-ssse3.exe         (SSSE3 baseline)                 — LTO + PGO
-#   PlentyChess-x64-generic.exe       (no SIMD extensions)             — LTO + PGO
+#   PlentyChess-x64-avx512vbmi2.exe   (icelake-client / VBMI2 + BMI2)
+#   PlentyChess-x64-avx512.exe        (skylake-avx512  / BMI2)
+#   PlentyChess-x64-bmi2.exe          (haswell / BMI2, no AVX-512)
+#   PlentyChess-x64-avx2.exe          (haswell / AVX2)
+#   PlentyChess-x64-ssse3.exe         (SSSE3 baseline)
+#   PlentyChess-x64-generic.exe       (no SIMD extensions)
 #
 # LTO note: the Makefile only enables -flto=auto on Windows for MSVC-target
 # clang (clang-cl). MSYS2 CLANG64 targets x86_64-w64-mingw32, so the
@@ -110,23 +110,34 @@ jobs:
       - name: Build ${{ matrix.exe }}.exe
         shell: msys2 {0}
         run: |
-          # Use Full LTO instead of ThinLTO
+          # Enable Full Link-Time Optimization
           OPT_FLAGS="-flto"
           
           if [[ "${{ matrix.target }}" == "all" ]]; then
-            # --- For AVX-512 targets (Normally skip PGO) ---
+            # --- For AVX-512 targets (Manually handle PGO pipeline) ---
             echo "Performing Cross-Architecture PGO for AVX-512..."
             
-            # 1. First run a profile-build targeting generic architecture to safely gather metrics
-            make profile-build arch=generic \
+            # 1. Download and process the neural network
+            make process-net arch=avx2
+            
+            # 2. Build an instrumented avx2 binary (safely runnable on GitHub hosts)
+            make _nopgo arch=avx2 \
               CXX="clang++ $OPT_FLAGS" \
               CC="clang $OPT_FLAGS" \
-              EXE=pgo_gen.exe
+              CXXFLAGS_EXTRA="-fprofile-instr-generate -DPROFILE_GENERATE" \
+              EXE=pgo_gen.exe \
+              SKIP_PROCESS_NET=true
             
-            # 2. Clean up the object files but keep default.profdata and processed.bin
-            rm -f src/*.o src/fathom/src/*.o pgo_gen.exe
+            # 3. Run the benchmark simulation to generate raw profile data (default.profraw)
+            ./pgo_gen.exe bench
             
-            # 3. Build the final AVX-512 binary using the generated profile data
+            # 4. Merge the raw profiles into a structured profile data file
+            llvm-profdata merge -output=default.profdata default.profraw
+            
+            # 5. Clear the generic .o files and temp profiles, keeping default.profdata & processed.bin
+            rm -f src/*.o src/fathom/src/*.o pgo_gen.exe default.profraw
+            
+            # 6. Build the final AVX-512 production binary using the profile data
             make _nopgo arch=${{ matrix.arch }} \
               CXX="clang++ $OPT_FLAGS" \
               CC="clang $OPT_FLAGS" \
@@ -134,11 +145,12 @@ jobs:
               EXE=${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe \
               SKIP_PROCESS_NET=true
               
-            # 4. Final cleanup of the profiles
-            rm -f default.profdata default.profraw
+            # 7. Final cleanup of the profile data
+            rm -f default.profdata
             
           else
             # --- For regular targets (bmi2, avx2, ssse3, generic) ---
+            # These can use the Makefile's native targets safely as they build in a single pass
             make ${{ matrix.target }} \
               arch=${{ matrix.arch }} \
               CXX="clang++ $OPT_FLAGS" \
