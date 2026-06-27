@@ -125,13 +125,24 @@ jobs:
           name: pgo-data
           path: .
 
-      - name: Download Intel SDE
+      - name: Download and verify Intel SDE
         shell: msys2 {0}
         run: |
-          curl -sOL https://downloadmirror.intel.com/813591/sde-external-9.33.0-2024-01-07-win.zip
-          unzip -q sde-external*.zip
+          # Use -L to follow redirects and --retry to handle transient network issues
+          curl -L -o sde.zip https://downloadmirror.intel.com/813591/sde-external-9.33.0-2024-01-07-win.zip
+          
+          # Debug: check what we actually downloaded
+          echo "File size:"
+          ls -lh sde.zip
+          file sde.zip
+          
+          # Verify it's actually a zip file
+          unzip -t sde.zip || (echo "Downloaded file is not a valid zip! Checking contents..." && head -n 20 sde.zip && exit 1)
+          
+          # Proceed to unzip
+          unzip -q sde.zip
           mv sde-external-*/ sde/
-
+          
       - name: Generate architecture-specific network
         shell: msys2 {0}
         run: |
