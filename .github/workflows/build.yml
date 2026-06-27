@@ -129,7 +129,7 @@ jobs:
         shell: msys2 {0}
         run: |
           # Download
-          curl -L -o sde.tar.xz https://downloadmirror.intel.com/915934/sde-external-10.8.0-2026-03-15-win.tar.xz
+          curl -L -o sde.tar.xz https://downloadmirror.intel.com/859732/sde-external-9.58.0-2025-06-16-win.tar.xz
           
           # Extract (tar will now find the 'xz' utility in the path)
           tar -xf sde.tar.xz
