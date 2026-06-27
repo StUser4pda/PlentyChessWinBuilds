@@ -129,7 +129,7 @@ jobs:
         shell: msys2 {0}
         run: |
           # Use -L to follow redirects and --retry to handle transient network issues
-          curl -L -o sde.zip https://downloadmirror.intel.com/813591/sde-external-9.33.0-2024-01-07-win.zip
+          curl -L -o sde.zip https://downloadmirror.intel.com/915934/sde-external-10.8.0-2026-03-15-win.tar.xz
           
           # Debug: check what we actually downloaded
           echo "File size:"
