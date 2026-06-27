@@ -107,32 +107,34 @@ jobs:
         run: make process-net arch=generic CXX=clang++
 
       # ── 4. Compile ───────────────────────────────────────────────────────────
-      #    profile-build (bmi2 / avx2 / ssse3 / generic):
-      #      _pgo  – compile with -fprofile-instr-generate
-      #            – run "engine bench" to collect profile data
-      #            – llvm-profdata merge
-      #            – recompile with -fprofile-instr-use  (final binary)
-      #
-      #    all (avx512 / avx512vbmi2):
-      #      _nopgo – -O3 + ThinLTO, no PGO (bench would SIGILL on this runner)
       - name: Build ${{ matrix.exe }}.exe
         shell: msys2 {0}
-        env:
-          # Injected via env vars so the Makefile's $(CXXFLAGS)/$(LDFLAGS)
-          # expansions pick them up. The Makefile's own LTO branch only fires
-          # for MSVC-target clang (clang-cl); MSYS2's x86_64-w64-mingw32
-          # clang never hits it, so we add ThinLTO this way instead.
-          # -flto=thin is preferred over -flto=auto: ThinLTO is clang-native,
-          # faster to link, and plays well with -fuse-ld=lld already in LDFLAGS.
-          CFLAGS:   -flto=thin
-          CXXFLAGS: -flto=thin
-          LDFLAGS:  -flto=thin
         run: |
-          make -j$(nproc) ${{ matrix.target }} \
-            arch=${{ matrix.arch }} \
-            CXX=clang++ \
-            EXE=${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe \
-            SKIP_PROCESS_NET=true
+          # Define maximum optimization flags
+          OPT_FLAGS="-flto -fno-plt"
+          
+          if [[ "${{ matrix.target }}" == "all" ]]; then
+            # --- For AVX-512 targets (Normally skip PGO) ---
+            echo "Performing Cross-Architecture PGO for AVX-512..."
+            
+            # 1. Build an instrumented generic binary that CAN run on this host
+            make clean
+            make -j$(nproc) _pgo arch=generic CXX="clang++ $OPT_FLAGS" CC="clang $OPT_FLAGS" EXE=pgo_gen.exe SKIP_PROCESS_NET=true
+            
+            # 2. Now that default.profdata is generated, compile the final AVX-512 binary using it!
+            make clean
+            make -j$(nproc) _nopgo arch=${{ matrix.arch }} CXX="clang++ $OPT_FLAGS" CC="clang $OPT_FLAGS" CXXFLAGS_EXTRA="-fprofile-instr-use=default.profdata" EXE=${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe SKIP_PROCESS_NET=true
+            
+          else
+            # --- For regular targets (bmi2, avx2, ssse3, generic) ---
+            make -j$(nproc) ${{ matrix.target }} \
+              arch=${{ matrix.arch }} \
+              CXX="clang++ $OPT_FLAGS" \
+              CC="clang $OPT_FLAGS" \
+              LDFLAGS="-flto" \
+              EXE=${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe \
+              SKIP_PROCESS_NET=true
+          fi     
 
       # ── 5. Strip debug symbols ───────────────────────────────────────────────
       - name: Strip ${{ matrix.exe }}.exe
