@@ -118,15 +118,20 @@ jobs:
             EXE=${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe \
             SKIP_PROCESS_NET=true
 
-      # ── 5. Quick sanity check ────────────────────────────────────────────────
-      #    Verify the binary starts and reports a version / bench result.
+      # ── 5. Strip debug symbols ───────────────────────────────────────────────
+      - name: Strip ${{ matrix.exe }}.exe
+        shell: msys2 {0}
+        run: llvm-strip ${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe
+
+      # ── 6. Quick sanity check ────────────────────────────────────────────────
+      #    Runs after strip — verifies the binary still executes correctly.
       #    Skip for AVX-512 builds that may not run on this runner.
       - name: Smoke-test ${{ matrix.exe }}.exe
         shell: msys2 {0}
         if: ${{ !startsWith(matrix.arch, 'avx512') }}
         run: ./${{ matrix.exe }}-${{ steps.sha.outputs.short }}.exe bench 2>&1 | tail -5
 
-      # ── 5. Upload per-arch artifact ──────────────────────────────────────────
+      # ── 7. Upload per-arch artifact ──────────────────────────────────────────
       - name: Upload artifact · ${{ matrix.exe }}
         uses: actions/upload-artifact@v4
         with:
