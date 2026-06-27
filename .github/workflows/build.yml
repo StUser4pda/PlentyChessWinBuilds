@@ -145,7 +145,6 @@ jobs:
           # Package the executable and the required network file together
           mkdir release
           mv ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}.exe release/
-          cp processed.bin release/
 
       - name: Upload artifact · ${{ matrix.exe }}
         uses: actions/upload-artifact@v4
