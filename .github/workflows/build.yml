@@ -3,13 +3,19 @@
 #
 # Checks out Yoshie2000/PlentyChess directly; intended to run from any repo.
 #
-# Produces six statically-linked executables:
+# Produces six statically-linked executables (all with ThinLTO via -flto=thin):
 #   PlentyChess-x64-avx512vbmi2.exe   (icelake-client / VBMI2 + BMI2) — LTO
 #   PlentyChess-x64-avx512.exe        (skylake-avx512  / BMI2)         — LTO
-#   PlentyChess-x64-bmi2.exe          (haswell / BMI2, no AVX-512)     — PGO
-#   PlentyChess-x64-avx2.exe          (haswell / AVX2)                 — PGO
-#   PlentyChess-x64-ssse3.exe         (SSSE3 baseline)                 — PGO
-#   PlentyChess-x64-generic.exe       (no SIMD extensions)             — PGO
+#   PlentyChess-x64-bmi2.exe          (haswell / BMI2, no AVX-512)     — LTO + PGO
+#   PlentyChess-x64-avx2.exe          (haswell / AVX2)                 — LTO + PGO
+#   PlentyChess-x64-ssse3.exe         (SSSE3 baseline)                 — LTO + PGO
+#   PlentyChess-x64-generic.exe       (no SIMD extensions)             — LTO + PGO
+#
+# LTO note: the Makefile only enables -flto=auto on Windows for MSVC-target
+# clang (clang-cl). MSYS2 CLANG64 targets x86_64-w64-mingw32, so the
+# Makefile's LTO branch is never taken. Instead, -flto=thin is injected via
+# CFLAGS/CXXFLAGS/LDFLAGS env vars on the build step — the Makefile's own
+# $(CXXFLAGS) / $(LDFLAGS) := expansions pick them up at parse time.
 #
 # AVX-512 targets use `make all` (LTO, no PGO) because the free GitHub-hosted
 # Windows runners (Azure AMD EPYC) do not expose AVX-512 to guest VMs.
@@ -39,11 +45,11 @@ jobs:
         include:
           # ── arch ──────────── make target ─── note ───────────────────────
           - arch: avx512vbmi2
-            target: all             # no PGO — AVX-512 won't run on free runners
+            target: all             # no PGO — AVX-512 won't run on free runners; LTO via env
             exe:    PlentyChess-x64-avx512vbmi2
 
           - arch: avx512
-            target: all             # no PGO — AVX-512 won't run on free runners
+            target: all             # no PGO — AVX-512 won't run on free runners; LTO via env
             exe:    PlentyChess-x64-avx512
 
           - arch: bmi2
@@ -108,9 +114,19 @@ jobs:
       #            – recompile with -fprofile-instr-use  (final binary)
       #
       #    all (avx512 / avx512vbmi2):
-      #      _nopgo – compile with LTO only (no bench run needed)
+      #      _nopgo – -O3 + ThinLTO, no PGO (bench would SIGILL on this runner)
       - name: Build ${{ matrix.exe }}.exe
         shell: msys2 {0}
+        env:
+          # Injected via env vars so the Makefile's $(CXXFLAGS)/$(LDFLAGS)
+          # expansions pick them up. The Makefile's own LTO branch only fires
+          # for MSVC-target clang (clang-cl); MSYS2's x86_64-w64-mingw32
+          # clang never hits it, so we add ThinLTO this way instead.
+          # -flto=thin is preferred over -flto=auto: ThinLTO is clang-native,
+          # faster to link, and plays well with -fuse-ld=lld already in LDFLAGS.
+          CFLAGS:   -flto=thin
+          CXXFLAGS: -flto=thin
+          LDFLAGS:  -flto=thin
         run: |
           make -j$(nproc) ${{ matrix.target }} \
             arch=${{ matrix.arch }} \
