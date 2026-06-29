@@ -27,6 +27,7 @@ jobs:
     runs-on: windows-latest
     outputs:
       sha: ${{ steps.sha.outputs.short }}
+      version: ${{ steps.version.outputs.ver }}
     
     steps:
       - name: Checkout Yoshie2000/PlentyChess
@@ -40,6 +41,11 @@ jobs:
         id: sha
         shell: bash
         run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Get PlentyChess version
+        id: version
+        shell: bash
+        run: echo "ver=$(grep -oP '(?<=VERSION = ")[^"]+' src/uci.h)" >> "$GITHUB_OUTPUT"
 
       - name: Set up MSYS2 CLANG64
         uses: msys2/setup-msys2@v2
@@ -151,7 +157,7 @@ jobs:
       - name: Build ${{ matrix.exe }}.exe
         shell: msys2 {0}
         run: |
-          EXE="${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}.exe"
+          EXE="${{ matrix.exe }}-${{ needs.generate-pgo.outputs.version }}-${{ needs.generate-pgo.outputs.sha }}.exe"
           
           # Pass SKIP_PROCESS_NET=true so the Makefile doesn't overwrite our SDE-generated processed.bin
           make -j$(nproc) _nopgo \
@@ -160,18 +166,18 @@ jobs:
 
       - name: Strip debug symbols
         shell: msys2 {0}
-        run: llvm-strip ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}.exe
+        run: llvm-strip ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.version }}-${{ needs.generate-pgo.outputs.sha }}.exe
 
       - name: Package Release
         shell: msys2 {0}
         run: |
           mkdir release
-          mv ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}.exe release/
+          mv ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.version }}-${{ needs.generate-pgo.outputs.sha }}.exe release/
 
       - name: Upload artifact · ${{ matrix.exe }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.sha }}
+          name: ${{ matrix.exe }}-${{ needs.generate-pgo.outputs.version }}-${{ needs.generate-pgo.outputs.sha }}
           path: release/*
           if-no-files-found: error
           retention-days: 30
