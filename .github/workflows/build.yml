@@ -68,7 +68,7 @@ jobs:
         shell: msys2 {0}
         run: |
           make -j$(nproc) _nopgo \
-            arch=bmi2 CXX=clang++ EXE=pgo_instr.exe SKIP_PROCESS_NET=true \
+            arch=avx2 CXX=clang++ EXE=pgo_instr.exe SKIP_PROCESS_NET=true \
             CXXFLAGS_EXTRA="-fprofile-instr-generate"
           
           # Run the engine to generate profiling data
